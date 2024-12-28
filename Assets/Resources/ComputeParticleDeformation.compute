@@ -1,0 +1,286 @@
+#pragma kernel ComputeCurves
+#pragma kernel ComputeGeometry
+#pragma kernel ComputeCulling
+#pragma kernel ComputeDirections
+#pragma kernel ComputeClear
+#pragma kernel ComputeCopy
+
+StructuredBuffer<float3> emitterBuffer;
+/*  
+    float3 worldOrigin;
+    float3 worldScale;
+    float3 margin;
+*/
+StructuredBuffer<float3> modelPosBuffer;
+StructuredBuffer<float3> modelNormBuffer;
+StructuredBuffer<float2> modelUVBuffer;
+StructuredBuffer<int> modelIndexBuffer;
+
+RWStructuredBuffer<float3> curveBuffer;
+
+RWStructuredBuffer<float3> vertexBuffer;
+RWStructuredBuffer<float3> normalBuffer;
+RWStructuredBuffer<float2> uvBuffer;
+RWByteAddressBuffer indexBuffer;
+RWStructuredBuffer<uint> indirectBuffer;
+/*
+        int index count per instance
+        int instance count
+        int base index offset
+        int base vertex offset
+        int base instance offset
+*/
+
+StructuredBuffer<float4> positionsBuffer;
+AppendStructuredBuffer<float4> culledPositionsBuffer;
+RWStructuredBuffer<float3> directionBuffer;
+
+uint particleCountX;
+uint particleCountY;
+uint particleCountZ;
+uint modelSize;
+uint modelIndicesSize;
+float modelHeight;
+float4 seed;
+
+uint spawnersCountX;
+uint spawnersCountY;
+
+uint submeshCountX;
+uint submeshCountY;
+
+float4 spawnerScale;
+float4x4 viewProjMat;
+
+float4 repulsor;
+float clear;
+
+RWTexture2D<float4> normalmap;
+RWTexture2D<float4> history;
+
+float random2D(float2 xy, float2 dir)
+{
+    float val = dot(xy, dir);
+    return frac(9.15 * sin(val));
+}
+
+[numthreads(8,8,1)]
+// once per curve
+void ComputeCurves (uint3 id : SV_DispatchThreadID)
+{
+    uint curveID = id.y * particleCountX + id.x;
+    curveID *= 3;
+
+    float3 worldOrigin = emitterBuffer[0];
+    float3 worldScale = emitterBuffer[1];
+    float3 margin = emitterBuffer[2];
+
+    float x = worldOrigin.x - (worldScale.x * 0.5) + (worldScale.x * 1.0) * (float(id.x) / float(particleCountX));
+    float y = worldScale.y;
+    float z = worldOrigin.z - (worldScale.z * 0.5) + (worldScale.z * 1.0) * (float(id.y) / float(particleCountY));
+
+    float2 uv = float2(float(id.x) / float(particleCountX), float(id.y) / float(particleCountY));
+
+    float3 cp0 = float3(x, 0.0, z);
+    float3 cp1 = float3(x, y / 2.0f, z);
+    float3 cp2 = float3(x, y, z);
+
+    float r0 = random2D(uv, seed.xz);
+    float r1 = random2D(uv, seed.xy);
+    float r2 = random2D(uv, seed.wz);
+    float3 rndm = float3(r0, r1, r2) * 2.0 - 1.0;
+    float3 random0 = float3(rndm.x * 0.1, 0.0         , rndm.z * 0.1);
+    float3 random1 = float3(rndm.y      , 0.0, rndm.x      );
+    float3 random2 = float3(rndm.z * 3.0, -(rndm.y*0.5 + 0.5) * worldScale.y * 1.0, rndm.y * 2.0);
+    cp0 += random0;
+    cp1 += random1 * 1.5;
+    cp2 += random2 * 2.0;
+    //cp1 += random1;
+    //cp2 += random2;
+
+    curveBuffer[curveID] = cp0;
+    curveBuffer[curveID + 1] = cp1;
+    curveBuffer[curveID + 2] = cp2;
+}
+
+float3 interpolateTranslation(float t, float3 cp0, float3 cp1, float3 cp2)
+{
+    float3 interpolatedTranslation = (1.0f - t) * (1.0f - t) * cp0 + 2.0f * (1.0f - t) * t * cp1 + t * t * cp2;
+    return interpolatedTranslation;
+}
+
+[numthreads(8,8,1)]
+// once per instance
+void ComputeGeometry (uint3 id : SV_DispatchThreadID)
+{	
+
+    float3 worldScale = emitterBuffer[1];
+
+    uint instanceID = id.y * particleCountX + id.x; 
+    uint vertexID = instanceID * modelSize;
+    uint indexID = instanceID * modelIndicesSize;
+    uint curveID = instanceID * 3;
+   
+    float3 cp0 = curveBuffer[curveID];
+    float3 cp1 = curveBuffer[curveID+1];
+    float3 cp2 = curveBuffer[curveID+2];
+
+    float2 npc = float2(float(id.x) / float(particleCountX), float(id.y) / float(particleCountY)); // normalized particle coordinate
+    float angle = acos(2.0 * random2D(npc, seed.xz) - 1.0) * 5.0;
+    float4x4 rot = float4x4(
+        float4(cos(angle), 0.0, sin(angle), 0.0),
+        float4(0.0, 1.0, 0.0, 0.0),
+        float4( - sin(angle), 0.0, cos(angle), 0.0),
+        float4(0.0, 0.0, 0.0, 1.0)
+    );
+
+    for (int i = 0; i < int(modelSize); i++)
+    {
+        float3 vPos = modelPosBuffer[i]; // read model
+        float3 vNorm = modelNormBuffer[i];
+        float2 vUV = modelUVBuffer[i];
+        
+        float3 t = interpolateTranslation(vPos.y / worldScale.y, cp0, cp1, cp2);
+        float3 worldPos = vPos + t;
+
+        float3 p = worldPos - cp0;
+        float4 rotPos = mul(rot, float4(p.x, p.y, p.z, 1.0));
+        rotPos += float4(cp0.x, cp0.y, cp0.z, 1.0);
+
+        float3 n = mul(rot, float4(vNorm.x, vNorm.y, vNorm.z, 1.0));
+
+        vertexBuffer[vertexID + i] = rotPos.xyz;
+        normalBuffer[vertexID + i] = n;
+        uvBuffer[vertexID + i] = vUV;
+    }
+
+
+    for (int j = 0; j < int(modelIndicesSize); j++) 
+    {
+        indexBuffer.Store((indexID + j) * 4, instanceID * modelSize + modelIndexBuffer[j]);
+    }
+	
+}
+
+uint IsVisibleAfterFrustumCulling(float4 clipPos)
+{
+    return (clipPos.z > clipPos.w
+        || clipPos.x < -clipPos.w
+        || clipPos.x > clipPos.w
+        || clipPos.y < -clipPos.w
+        || clipPos.y > clipPos.w)
+        ? 0 : 1;
+}
+    
+[numthreads(8, 8, 1)]
+// once per instance
+void ComputeCulling(uint3 id : SV_DispatchThreadID)
+{
+    uint instanceID = id.y * spawnersCountX + id.x;
+    float4 pos = positionsBuffer[instanceID];
+
+    float3 bounds = float3(6.0, modelHeight, 6.0);
+    // Check if the instance is visible
+    float3 minPos = pos.xyz - bounds;
+    float3 maxPos = pos.xyz + bounds;
+
+    float4 boxCorners[8];
+    boxCorners[0] = float4(minPos.x, minPos.y, minPos.z, 1.0);
+    boxCorners[1] = float4(minPos.x, minPos.y, maxPos.z, 1.0);
+    boxCorners[2] = float4(minPos.x, maxPos.y, minPos.z, 1.0);
+    boxCorners[3] = float4(minPos.x, maxPos.y, maxPos.z, 1.0);
+    boxCorners[4] = float4(maxPos.x, minPos.y, minPos.z, 1.0);
+    boxCorners[5] = float4(maxPos.x, minPos.y, maxPos.z, 1.0);
+    boxCorners[6] = float4(maxPos.x, maxPos.y, minPos.z, 1.0);
+    boxCorners[7] = float4(maxPos.x, maxPos.y, maxPos.z, 1.0);
+
+    bool visible = false;
+    float2 depthClip;
+    #if (SHADER_API_GLCORE || SHADER_API_GLES3 || SHADER_API_VULKAN )
+        depthClip.x = -1.0;
+        depthClip.y = 1.0;
+    #else
+        depthClip.x = 0.0;
+        depthClip.y = 1.0;
+    #endif
+    for (int i = 0; i < 8; i++)
+    {
+        float4 clipPos = mul(viewProjMat, boxCorners[i]);
+        clipPos.xyz = clipPos.xyz / clipPos.w;
+        if (clipPos.x < 1.0 && clipPos.x > -1.0 && clipPos.y < 1.0 && clipPos.y > -1.0 && clipPos.z < depthClip.y && clipPos.z >  depthClip.x) {
+            visible = true;
+        }
+    }
+
+    if (length(pos.xz - float2(0.0, 0.0)) > 40.0f){
+        visible = false; 
+    }
+
+    if (visible) {
+        culledPositionsBuffer.Append(pos);
+    }
+
+}
+
+[numthreads(8, 8, 1)]
+// once per instance
+void ComputeDirections(uint3 id : SV_DispatchThreadID)
+{
+    uint2 texID = uint2(id.x, id.y);
+    float4 h = normalmap.Load(int3(id.x, id.y, 0));
+
+    uint submeshID = id.y * submeshCountX + id.x;
+    float x = float(id.x) / float(submeshCountX); 
+    float y = float(id.y) / float(submeshCountY); 
+    float2 uv = float2(x, y);
+
+    float2 p = float2(repulsor.x, repulsor.y);
+    float r = repulsor.z;
+    float distToPoint = min(r, length(uv - p));
+    float normalizedDist = distToPoint / r;
+    float mask =  1.0 - smoothstep(0.0, r, normalizedDist);
+
+    // // alt
+    // float draw = pow(saturate(1 - distance(uv, repulsor.xy)), 50);
+    // float height = saturate(h.w + draw);
+
+    float dst = h.w;
+    float src = mask; 
+    float height = saturate(dst + src);
+
+    float3 dir = float3(0.5, 0.0, 0.5); // [0,1]
+    
+    float2 repulseDir = normalize(p-uv); // [-1, 1]
+    float radius = r;
+    float2 outDir = lerp(float2(0.0, 0.0), repulseDir, mask); // [-1, 1]
+    outDir = outDir * float2(0.5, 0.5) + float2(0.5, 0.5); // [0, 1]
+    outDir = saturate(outDir * mask + h.xz * (1.0 - mask)) ; // [0, 1]
+    float3 norm = normalize(float3(outDir.x, lerp(0.5, 1.0, 1.0 - height), outDir.y));
+
+    if (clear == 1.0){
+        norm.x = max(0.0, norm.x - 0.005 * clear);
+        norm.y = min(1.0, norm.y + 0.005 * clear);
+        norm.z = max(0.0, norm.x - 0.005 * clear);
+        height = max(0.0, height - 0.005 * clear);
+    }
+
+    normalmap[texID.xy] = float4(norm.x, norm.y, norm.z, height);
+}
+
+[numthreads(8, 8, 1)]
+// once per instance
+void ComputeClear(uint3 id : SV_DispatchThreadID)
+{
+    uint2 texID = uint2(id.x, id.y);
+    normalmap[texID.xy] = float4(0.5, 1.0, 0.5, 0.0);
+    //history[texID.xy] = float4(0.0, 0.0, 0.0, 0.0);
+}
+
+[numthreads(8, 8, 1)]
+// once per instance
+void ComputeCopy(uint3 id : SV_DispatchThreadID)
+{
+    uint2 texID = uint2(id.x, id.y);
+    float4 h = normalmap.Load(int3(id.x, id.y, 0));
+    //history[texID.xy] = h;
+}
