@@ -6,8 +6,7 @@ using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
-using Unity.Sentis;
-using Unity.Sentis.Layers;
+using UnityEngine.Experimental.Rendering;
 
 using static QuadstripUtil;
 
@@ -394,7 +393,6 @@ class ProceduralPass : ScriptableRenderPass
         kernelIDs[2] = computeShader.FindKernel("ComputeCulling");
         kernelIDs[3] = computeShader.FindKernel("ComputeDirections");
         kernelIDs[4] = computeShader.FindKernel("ComputeClear");
-        kernelIDs[5] = computeShader.FindKernel("ComputeCopy");
 
         uint workgroupSizeX;
         uint workgroupSizeY;
@@ -423,6 +421,7 @@ class ProceduralPass : ScriptableRenderPass
         // heigtnmap
         nmap = new RenderTexture(submeshCountX, submeshCountY, 0);
         nmap.enableRandomWrite = true;
+        nmap.graphicsFormat = GraphicsFormat.R8G8B8A8_UNorm;
         nmap.Create();
 
         repulsor = settings.repulsor;
@@ -566,17 +565,7 @@ class ProceduralPass : ScriptableRenderPass
 
         if(InputManagerUtil.Active == true)
         {
-            // 2a. Dispatch (computy copy)
-            // Set Buffers
-            // ----------------- read / write ---------------------------------------
-            // if (InputManagerUtil.Clear == true){
-            //     computeShader.SetTexture(kernelIDs[5], normalmapUID, nmap);
-            //     cmdbuffer.DispatchCompute(computeShader, kernelIDs[5], workgroupCountX_2, workgroupCountY_2, workgroupCountZ_2);
-            //     Debug.Log("CLEAR");
-            // }
-            // InputManagerUtil.Clear = false;
-
-            // 2b. Dispatch (compute directions)
+            // 2. Dispatch (compute directions)
             // ----------------------------------------------------------
             // Set uniforms
             computeShader.SetInt(submeshCountXUID, (int)submeshCountX);

@@ -3,7 +3,6 @@
 #pragma kernel ComputeCulling
 #pragma kernel ComputeDirections
 #pragma kernel ComputeClear
-#pragma kernel ComputeCopy
 
 StructuredBuffer<float3> emitterBuffer;
 /*  
@@ -55,8 +54,7 @@ float4x4 viewProjMat;
 float4 repulsor;
 float clear;
 
-RWTexture2D<float4> normalmap;
-RWTexture2D<float4> history;
+RWTexture2D<unorm float4> normalmap;
 
 float random2D(float2 xy, float2 dir)
 {
@@ -179,39 +177,7 @@ void ComputeCulling(uint3 id : SV_DispatchThreadID)
     uint instanceID = id.y * spawnersCountX + id.x;
     float4 pos = positionsBuffer[instanceID];
 
-    float3 bounds = float3(6.0, modelHeight, 6.0);
-    // Check if the instance is visible
-    float3 minPos = pos.xyz - bounds;
-    float3 maxPos = pos.xyz + bounds;
-
-    float4 boxCorners[8];
-    boxCorners[0] = float4(minPos.x, minPos.y, minPos.z, 1.0);
-    boxCorners[1] = float4(minPos.x, minPos.y, maxPos.z, 1.0);
-    boxCorners[2] = float4(minPos.x, maxPos.y, minPos.z, 1.0);
-    boxCorners[3] = float4(minPos.x, maxPos.y, maxPos.z, 1.0);
-    boxCorners[4] = float4(maxPos.x, minPos.y, minPos.z, 1.0);
-    boxCorners[5] = float4(maxPos.x, minPos.y, maxPos.z, 1.0);
-    boxCorners[6] = float4(maxPos.x, maxPos.y, minPos.z, 1.0);
-    boxCorners[7] = float4(maxPos.x, maxPos.y, maxPos.z, 1.0);
-
-    bool visible = false;
-    float2 depthClip;
-    #if (SHADER_API_GLCORE || SHADER_API_GLES3 || SHADER_API_VULKAN )
-        depthClip.x = -1.0;
-        depthClip.y = 1.0;
-    #else
-        depthClip.x = 0.0;
-        depthClip.y = 1.0;
-    #endif
-    for (int i = 0; i < 8; i++)
-    {
-        float4 clipPos = mul(viewProjMat, boxCorners[i]);
-        clipPos.xyz = clipPos.xyz / clipPos.w;
-        if (clipPos.x < 1.0 && clipPos.x > -1.0 && clipPos.y < 1.0 && clipPos.y > -1.0 && clipPos.z < depthClip.y && clipPos.z >  depthClip.x) {
-            visible = true;
-        }
-    }
-
+    bool visible = true;
     if (length(pos.xz - float2(0.0, 0.0)) > 40.0f){
         visible = false; 
     }
@@ -239,10 +205,6 @@ void ComputeDirections(uint3 id : SV_DispatchThreadID)
     float distToPoint = min(r, length(uv - p));
     float normalizedDist = distToPoint / r;
     float mask =  1.0 - smoothstep(0.0, r, normalizedDist);
-
-    // // alt
-    // float draw = pow(saturate(1 - distance(uv, repulsor.xy)), 50);
-    // float height = saturate(h.w + draw);
 
     float dst = h.w;
     float src = mask; 
@@ -273,14 +235,4 @@ void ComputeClear(uint3 id : SV_DispatchThreadID)
 {
     uint2 texID = uint2(id.x, id.y);
     normalmap[texID.xy] = float4(0.5, 1.0, 0.5, 0.0);
-    //history[texID.xy] = float4(0.0, 0.0, 0.0, 0.0);
-}
-
-[numthreads(8, 8, 1)]
-// once per instance
-void ComputeCopy(uint3 id : SV_DispatchThreadID)
-{
-    uint2 texID = uint2(id.x, id.y);
-    float4 h = normalmap.Load(int3(id.x, id.y, 0));
-    //history[texID.xy] = h;
 }
