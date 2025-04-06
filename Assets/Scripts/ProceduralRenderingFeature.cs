@@ -57,8 +57,6 @@ public class ProceduralDrawSettings
     [SerializeField] public uint2 meshesPerInstance;
     [SerializeField] public uint2 instanceCount;
     [SerializeField] public Vector4 seed;
-    [SerializeField] public Texture2D noisemap;
-    [SerializeField] public Vector4 noisemapIntensity;
     [SerializeField] public bool enableWind;
     [SerializeField] public Vector4 wind;
     [SerializeField] public Vector4 repulsor;
@@ -68,6 +66,7 @@ class ProceduralPass : ScriptableRenderPass
 {
     private ProceduralDrawSettings settings;
     private Material material;
+    private Material copyMaterial;
     private Vector4 instanceScale;
     private Vector4 repulsor;
     private float minimumModelHeight;
@@ -121,7 +120,7 @@ class ProceduralPass : ScriptableRenderPass
     private ComputeBuffer directionBuffer;
     private int directionBufferUID;
 
-    private int noisemapUID;
+    private int normalmapR32UID;
     private int normalmapUID;
     private int heightmapHistoryUID;
     private int viewProjMatrixUID;
@@ -175,10 +174,12 @@ class ProceduralPass : ScriptableRenderPass
     private bool updateVertexBuffer;
 
     private RenderTexture nmap;
+    private RenderTexture nmap_2;
 
     public ProceduralPass(Material material, ProceduralDrawSettings settings)
     {
         this.material = material;
+        this.copyMaterial = new Material((Shader)Resources.Load("CopyShader"));
         this.settings = settings;
         Initialize();
     }
@@ -421,8 +422,14 @@ class ProceduralPass : ScriptableRenderPass
         // heigtnmap
         nmap = new RenderTexture(submeshCountX, submeshCountY, 0);
         nmap.enableRandomWrite = true;
-        nmap.graphicsFormat = GraphicsFormat.R8G8B8A8_UNorm;
+        nmap.graphicsFormat = GraphicsFormat.R32_SFloat;
         nmap.Create();
+
+        nmap_2 = new RenderTexture(submeshCountX, submeshCountY, 0);
+        nmap_2.enableRandomWrite = false;
+        nmap_2.graphicsFormat = GraphicsFormat.R8G8B8A8_UNorm;
+        nmap_2.Create();
+
 
         repulsor = settings.repulsor;
 
@@ -440,10 +447,11 @@ class ProceduralPass : ScriptableRenderPass
         indexBufferUID = Shader.PropertyToID("indexBuffer");
         positionsBufferUID = Shader.PropertyToID("positionsBuffer");
         culledPositionsBufferUID = Shader.PropertyToID("culledPositionsBuffer");
-        normalmapUID = Shader.PropertyToID("normalmap");
+        normalmapR32UID = Shader.PropertyToID("_NormalmapR32");
+        normalmapUID = Shader.PropertyToID("_Normalmap");
+
         heightmapHistoryUID = Shader.PropertyToID("history");
         directionBufferUID = Shader.PropertyToID("directionBuffer");
-        noisemapUID = Shader.PropertyToID("noisemap");
         camPosUID = Shader.PropertyToID("camPos");
 
         // restrieve shader resource UIDs for constants
@@ -488,14 +496,9 @@ class ProceduralPass : ScriptableRenderPass
         trnsfrm[6].SetRow(0, new Vector4(0.0f, 0.0f, 1.0f, -settings.VolumeBounds.x));
         trnsfrm[6].SetRow(2, new Vector4(0.0f, 0.0f, 1.0f, -settings.VolumeBounds.x));
 
-
         NOISE = new LocalKeyword(material.shader, "_NOISEMAP");
         VFX = new LocalKeyword(material.shader, "_VFX");
-        // WIND = new LocalKeyword(material.shader, "WIND");
-        // REPULSE = new LocalKeyword(material.shader, "REPULSE");
-        // CUSTOMMESH = new LocalKeyword(material.shader, "CUSTOMMESH");
-        // ALPHATEST = new LocalKeyword(material.shader, "ALPHATEST");
-        
+
         UpdateVertexBuffer();
         ClearRenderTargets();
     }
@@ -537,7 +540,7 @@ class ProceduralPass : ScriptableRenderPass
 
     private void ClearRenderTargets()
     {
-        computeShader.SetTexture(kernelIDs[4], normalmapUID, nmap);
+        computeShader.SetTexture(kernelIDs[4], normalmapR32UID, nmap);
         computeShader.Dispatch(kernelIDs[4], workgroupCountX_2, workgroupCountY_2, workgroupCountZ_2);
     }
 
@@ -576,11 +579,15 @@ class ProceduralPass : ScriptableRenderPass
             computeShader.SetVector(repulsorUID, new Vector4(InputManagerUtil.Coords.x, InputManagerUtil.Coords.y, InputManagerUtil.Coords.z, InputManagerUtil.Coords.w));
             // Set Buffers
             // ----------------- read / write ---------------------------------------
-            computeShader.SetTexture(kernelIDs[3], normalmapUID, nmap);
+            computeShader.SetTexture(kernelIDs[3], normalmapR32UID, nmap);
             
             cmdbuffer.DispatchCompute(computeShader, kernelIDs[3], workgroupCountX_2, workgroupCountY_2, workgroupCountZ_2);
             InputManagerUtil.Active = false;
         }
+
+        RenderTexture currentActiveRT = RenderTexture.active;
+        Graphics.Blit(nmap, nmap_2, copyMaterial, -1);
+        RenderTexture.active = currentActiveRT;
 
         // 3. Draw procedural
         // ----------------------------------------------------------
@@ -595,7 +602,7 @@ class ProceduralPass : ScriptableRenderPass
         material.SetBuffer(normalBufferUID, normalBuffer);
         material.SetBuffer(uvBufferUID, uvBuffer);
         material.SetBuffer(culledPositionsBufferUID, culledPositionsBuffer);
-        material.SetTexture(normalmapUID, nmap);
+        material.SetTexture(normalmapUID, nmap_2);
 
         // Set uniforms
         material.SetFloat(spawnerScaleUID[0], minimumModelHeight);
@@ -605,7 +612,6 @@ class ProceduralPass : ScriptableRenderPass
         material.SetInt(instanceCountUID[0], (int)settings.instanceCount[0]);
         material.SetVector(camPosUID, Camera.main.transform.position);
         material.SetVector(repulsorUID, new Vector4(InputManagerUtil.ActiveCoords.x, InputManagerUtil.ActiveCoords.y, InputManagerUtil.ActiveCoords.z, 0.0f));
-        material.SetTexture(noisemapUID, settings.noisemap);
         material.SetVector(windUID, settings.wind); 
 
         cmdbuffer.DrawProceduralIndirect(indexBuffer, trnsfrm[0], material, 0 , MeshTopology.Triangles, indirectBuffer);

@@ -54,12 +54,30 @@ float4x4 viewProjMat;
 float4 repulsor;
 float clear;
 
-RWTexture2D<unorm float4> normalmap;
+RWTexture2D<float> _NormalmapR32;
 
 float random2D(float2 xy, float2 dir)
 {
     float val = dot(xy, dir);
     return frac(9.15 * sin(val));
+}
+
+uint encodeUint(float x, float y, float z, float w)
+{
+    uint ux = (uint)(saturate(x) * 255.0);
+    uint uy = (uint)(saturate(y) * 255.0);
+    uint uz = (uint)(saturate(z) * 255.0);
+    uint uw = (uint)(saturate(w) * 255.0);
+    return ux | (uy << 8) | (uz << 16) | (uw << 24);
+}
+
+float4 decodeUint(uint u)
+{
+    float fx = (float)(u & 0x000000ff) / 255.0;
+    float fy = (float)((u >> 8) & 0x000000ff) / 255.0;
+    float fz = (float)((u >> 16) & 0x000000ff) / 255.0;
+    float fw = (float)((u >> 24) & 0x000000ff) / 255.0;
+    return float4(fx, fy, fz, fw);
 }
 
 [numthreads(8,8,1)]
@@ -193,7 +211,8 @@ void ComputeCulling(uint3 id : SV_DispatchThreadID)
 void ComputeDirections(uint3 id : SV_DispatchThreadID)
 {
     uint2 texID = uint2(id.x, id.y);
-    float4 h = normalmap.Load(int3(id.x, id.y, 0));
+    uint nmap = (uint) _NormalmapR32.Load(int3(id.x, id.y, 0));
+    float4 normal = decodeUint(nmap);
 
     uint submeshID = id.y * submeshCountX + id.x;
     float x = float(id.x) / float(submeshCountX); 
@@ -206,7 +225,7 @@ void ComputeDirections(uint3 id : SV_DispatchThreadID)
     float normalizedDist = distToPoint / r;
     float mask =  1.0 - smoothstep(0.0, r, normalizedDist);
 
-    float dst = h.w;
+    float dst = normal.w;
     float src = mask; 
     float height = saturate(dst + src);
 
@@ -216,7 +235,7 @@ void ComputeDirections(uint3 id : SV_DispatchThreadID)
     float radius = r;
     float2 outDir = lerp(float2(0.0, 0.0), repulseDir, mask); // [-1, 1]
     outDir = outDir * float2(0.5, 0.5) + float2(0.5, 0.5); // [0, 1]
-    outDir = saturate(outDir * mask + h.xz * (1.0 - mask)) ; // [0, 1]
+    outDir = saturate(outDir * mask + normal.xz * (1.0 - mask)) ; // [0, 1]
     float3 norm = normalize(float3(outDir.x, lerp(0.5, 1.0, 1.0 - height), outDir.y));
 
     if (clear == 1.0){
@@ -225,8 +244,7 @@ void ComputeDirections(uint3 id : SV_DispatchThreadID)
         norm.z = max(0.0, norm.x - 0.005 * clear);
         height = max(0.0, height - 0.005 * clear);
     }
-
-    normalmap[texID.xy] = float4(norm.x, norm.y, norm.z, height);
+    _NormalmapR32[texID.xy] = (float)encodeUint(norm.x, norm.y, norm.z, height);
 }
 
 [numthreads(8, 8, 1)]
@@ -234,5 +252,5 @@ void ComputeDirections(uint3 id : SV_DispatchThreadID)
 void ComputeClear(uint3 id : SV_DispatchThreadID)
 {
     uint2 texID = uint2(id.x, id.y);
-    normalmap[texID.xy] = float4(0.5, 1.0, 0.5, 0.0);
+    _NormalmapR32[texID.xy] = (float)encodeUint(0.0, 1.0, 0.0, 1.0);
 }

@@ -23,8 +23,6 @@ MonoBehaviour:
       x: 16
       y: 16
     seed: {x: 4.58, y: 3.25, z: -1.63, w: 4.29}
-    noisemap: {fileID: 2800000, guid: a06af7c86786c6c40ad7e9dc4a76613d, type: 3}
-    noisemapIntensity: {x: -1.11, y: 2.31, z: 3, w: 1.01}
     enableWind: 0
     wind: {x: 0.2, y: 0.5, z: 4, w: 0}
     repulsor: {x: 0.5, y: 0.5, z: 0.25, w: 0}
@@ -65,7 +63,7 @@ MonoBehaviour:
   - {fileID: -9197596409386527403}
   m_RendererFeatureMap: 55951befcb925b80
   m_UseNativeRenderPass: 0
-  xrSystemData: {fileID: 11400000, guid: 60e1133243b97e347b653163a8c01b64, type: 2}
+  xrSystemData: {fileID: 0}
   postProcessData: {fileID: 11400000, guid: 41439944d30ece34e96484bdb6645b55, type: 2}
   m_AssetVersion: 2
   m_OpaqueLayerMask:

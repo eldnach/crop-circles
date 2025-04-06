@@ -2,10 +2,11 @@ Shader "Unlit/ParticleShader"
 {
     Properties
     {
-        _Colormap("Color map", 2D) = "" {}
-        _Smoothmap("SmoothAO map", 2D) = "" {}
-        _Normalmap("Normal map", 2D) = "" {}
+        _Colormap("Color Alpha map", 2D) = "" {}
+        _Smoothmap("Smooth AO map", 2D) = "" {}
         _Noisemap("Noise map", 2D) = "" {}  
+        [HideInInspector]
+        _Normalmap("Normal map", 2D) = "" {}  
         _Color0("Example color", Color) = (.0, .0, .0, 1.0)
         _Color1("Example color", Color) = (1.0, 1.0, 1.0, 1.0)
         _SubsurfaceColor("Subsurface Color", Color) = (1.0, 1.0, 1.0, 1.0)
@@ -82,7 +83,7 @@ Shader "Unlit/ParticleShader"
                 float3 normal2 : TEXCOORD4;
                 float3 worldPos : TEXCOORD5;
                 float3 worldUV : TEXCOORD6;
-                float2 flow : TEXCOORD7;
+                float3 flow : TEXCOORD7;
             };
 
             struct fragdata
@@ -94,18 +95,14 @@ Shader "Unlit/ParticleShader"
             SAMPLER(sampler_Colormap);
             TEXTURE2D(_Smoothmap);
             SAMPLER(sampler_Smoothmap);
-            TEXTURE2D(_Normalmap);
-            SAMPLER(sampler_Normalmap);
             TEXTURE2D(_Noisemap);
             SAMPLER(sampler_Noisemap);
-
-            sampler2D normalmap;
-            sampler2D noisemap;
+            TEXTURE2D(_Normalmap);
+            SAMPLER(sampler_Normalmap);
 
             CBUFFER_START(UnityPerMaterial)
                 float4 _Colormap_ST;
                 float4 _Smoothmap_ST;
-                float4 _Normalmap_ST;
                 half4 _Color0;
                 half4 _Color1;
                 half4 _SubsurfaceColor;
@@ -120,7 +117,6 @@ Shader "Unlit/ParticleShader"
             StructuredBuffer<float4> culledPositionsBuffer;
 
             float4 seed;
-            float4 noisemapIntensity;
             float modelHeight;
             float worldScale;
             float time;
@@ -269,6 +265,15 @@ Shader "Unlit/ParticleShader"
                 Color = CalculateFoliageLighting(d);
             }
 
+            float4 decodeUint(uint u)
+            {
+                float fx = (float)(u & 0x000000ff) / 255.0;
+                float fy = (float)((u >> 8) & 0x000000ff) / 255.0;
+                float fz = (float)((u >> 16) & 0x000000ff) / 255.0;
+                float fw = (float)((u >> 24) & 0x000000ff) / 255.0;
+                return float4(fx, fy, fz, fw);
+            }
+
             v2f vert(vertdata v)
             {
                 v2f o;
@@ -285,14 +290,15 @@ Shader "Unlit/ParticleShader"
                 float y = worldPos.z / (worldScale / 2.0f);
                 y = y * 0.5f + 0.5f;
 
-                float4 dirmap = tex2Dlod(normalmap, float4(x, y, 0, 2)); // [0,1]
+                float4 nmap = 1.0-(float4)SAMPLE_TEXTURE2D_LOD(_Normalmap, sampler_Normalmap, float2(x, y), 0);
+                float3 nmap_unit = nmap.xyz * float3(2.0, 2.0, 2.0) - float3(1.0, 1.0, 1.0);
                 float h = 1.0 - (worldPos.y / modelHeight);
-                float3 offsetDir = dirmap.xyz * float3(2.0, 2.0, 2.0) - float3(1.0, 1.0, 1.0); // [-1, 1]
+                float3 offsetDir = nmap_unit; // [-1, 1]
                 offsetDir.xz *= 5. ;
                 offsetDir.y *= 10.;    
 
                 if(_VFX){
-                    worldPos = lerp(worldPos + offsetDir * (1.0 - h), worldPos, 1.0 - dirmap.y);
+                    worldPos = lerp(worldPos + offsetDir * (1.0 - h), worldPos, 1.0 - nmap.y);
                 } else {
                     offsetDir = float3(0.5, 10.0, 0.5);
                     worldPos = lerp(worldPos + offsetDir * (1.0 - h), worldPos, 0.0);
@@ -300,7 +306,8 @@ Shader "Unlit/ParticleShader"
 
                 if(_NOISEMAP){
                     float x_1 = x + time * wind.x;
-                    float4 noise = tex2Dlod(noisemap, float4(x_1 * wind.y , y * wind.y, 0, 0)); // [0 ,1]
+
+                    float4 noise = SAMPLE_TEXTURE2D_LOD(_Noisemap, sampler_Noisemap, float2(x_1 * wind.y , y * wind.y), 0.0);
                     float2 windOffset = float2(noise.x, noise.z);
                     windOffset -= float2(0.5, 0.5); // [-0.5, 0.5]
                     windOffset *= wind.z;
@@ -309,7 +316,8 @@ Shader "Unlit/ParticleShader"
 
                     float bump = length(float2((worldPos.x / ((worldScale * 3.0)/2) * 4), (worldPos.z / ((worldScale * 3.0)/2) * 4) ) );
                     bump = 1.0 - smoothstep(0.0, 0.5, bump);
-                    bump -=  tex2Dlod(noisemap, float4(x *2  , y *2, 0, 0)).x;
+                    //bump -=  tex2Dlod(_Noisemap, float4(x *2  , y *2, 0, 0)).x;
+                    bump -=  SAMPLE_TEXTURE2D_LOD(_Noisemap, sampler_Noisemap, float2(x *2  , y *2), 0.0);
                     worldPos.y = lerp(worldPos.y, worldPos.y + bump * 15, 1.0 - h);
 
                     if(_VFX){
@@ -323,14 +331,14 @@ Shader "Unlit/ParticleShader"
                 worldPos = worldPos + worldOffset;
                 o.worldPos = worldPos;
                 o.vertex = TransformWorldToHClip(worldPos);
-                o.height = (1.0 - dirmap.w);
+                o.height = (1.0-nmap.w);
                 
                 float3 n1 = vNorm;
-                float3 n2 = float3(dirmap.x, 1.0 - dirmap.y, dirmap.z) * 2.0 - 1.0;
-                o.normal = lerp(n1, n2, dirmap.w);
+                float3 n2 = nmap_unit.xyz;
+                o.normal = lerp(n1, n2, nmap.w);
                 o.normal2 = n1;
                 o.worldUV = float3(x, y, worldPos.y / modelHeight );
-                o.flow = float2(dirmap.x, dirmap.z);
+                o.flow = float3(nmap.x, nmap.y, nmap.z);
 
                 return o;
             }
@@ -341,20 +349,15 @@ Shader "Unlit/ParticleShader"
  
                 float4 colmap = SAMPLE_TEXTURE2D(_Colormap, sampler_Colormap, i.uv);
                 float4 smoothmap = SAMPLE_TEXTURE2D(_Smoothmap, sampler_Smoothmap, i.uv);
-                float4 normalmap = SAMPLE_TEXTURE2D(_Normalmap, sampler_Normalmap, i.uv);
 
-                float3 norm;
-                if(_VFX){
-                    norm = i.normal;
-                } else {
-                    norm = i.normal2;
-                }
-                float3 norm2 = i.normal2;
+                float3 norm = i.normal;
+                float3 norm2 = i.normal2; // vertex normal
 
                 float a = colmap.w;
                 float3 color = colmap.xyz;
                 float3 variance =  SAMPLE_TEXTURE2D(_Noisemap, sampler_Noisemap, i.worldUV.xz * .5).rgb;
                 color = lerp(color, _Color1.xyz, min(1.0, variance.y *.25 + variance.x *.25 * _Color1.w ));
+                color = lerp(color, _Color0.xyz * _Color0.w , min(1.0, variance.y *.25 + variance.x *.25) );
 
                 Light mainLight = GetMainLight();
                 float3 lightDir = mainLight.direction;
@@ -422,64 +425,63 @@ Shader "Unlit/ParticleShader"
 
                 color = litColor;
 
-                variance = variance * (1.0-i.worldUV.x);
-                color = lerp(color, _Color0.xyz * _Color0.w, min(1.0, variance.y *.25 + variance.x *.25) );
+                // variance = variance * (1.0-i.worldUV.x);
+                // color = lerp(color, _Color0.xyz * _Color0.w , min(1.0, variance.y *.25 + variance.x *.25) );
+
+                float mask = i.height ;
+                mask *= 1;
+              //  color = lerp(color, color * 0.125, mask);
 
                 if(_VFX){
+                  
+                    // color = lerp(color, color * _Color0 * 0.5, pow((1.0 - mask), 6));
+                    // color = lerp(color * 0.125, color,  smoothstep(0.4, 1.,  i.height) + (1 - smoothstep(0.0, .1,   i.height)) );
 
-                    float mask = i.height;
-                    color = lerp(color, color * _Color1, 1.0 - mask);
-                    color = lerp(color, color * _Color0 * 0.5, pow((1.0 - mask), 6));
-                    color = lerp(color * 0.125, color,  smoothstep(0.4, 1.,  i.height) + (1 - smoothstep(0.0, .1,   i.height)) );
+                    // float2 wUV = i.worldUV.xy;
+                    // float2 scale = float2(4.0, 4.0);
+                    // float2 offset = float2(time, time) * .5;
+                    // offset += i.flow.xy * 2.0 - 1.0;
+                    // wUV = scale * wUV + offset;
+                    // float4 noise = SAMPLE_TEXTURE2D(_Noisemap, sampler_Noisemap, wUV);
+                    // float fireTrail = noise.x + noise.z;
+                    // fireTrail *= (1.0 - mask);
 
-                    float2 wUV = i.worldUV.xy;
-                    float2 scale = float2(4.0, 4.0);
-                    float2 offset = float2(time, time) * .5;
-                    offset += (float2(i.flow.x , i.flow.y) * 2.0 - 1.0);
-                    wUV = scale * wUV + offset;
-                    float4 noise = SAMPLE_TEXTURE2D(_Noisemap, sampler_Noisemap, wUV);
-                    float fireTrail = noise.x + noise.z;
-                    fireTrail *= (1.0 - i.height);
+                    // float trailDist = repulsor.z * 1.0;
+                    // float fireMask = 1.0 - smoothstep(0.0, trailDist, (length(float2(repulsor.x, repulsor.y) - i.worldUV))/ 0.25);
+                    // fireMask *= (1.0 - mask);
 
-                    float trailDist = repulsor.z * 1.0;
-                    float fireMask = 1.0 - smoothstep(0.0, trailDist, (length(float2(repulsor.x, repulsor.y) - i.worldUV))/ 0.25);
-                    fireMask *= (1.0 - i.height);
+                    // fireTrail *= fireMask;
+                    // fireTrail = lerp(fireTrail * 2.0, fireTrail, repulsor.z);
 
-                    fireTrail *= fireMask;
-                    fireTrail = lerp(fireTrail * 2.0, fireTrail, repulsor.z);
+                    // float3 fireColor =  float3(fireTrail * 4.0, fireTrail * 1., fireTrail * 0.25);
+                    // color.xyz = lerp(color.xyz, fireColor.xyz, fireTrail * repulsor.z );
 
-                    float3 fireColor =  float3(fireTrail * 4.0, fireTrail * 1., fireTrail * 0.25);
-                    color.xyz = lerp(color.xyz, fireColor.xyz, fireTrail * repulsor.z );
+                    // wUV = i.worldUV.xy;
+                    // scale = float2(8.0, 8.0);
+                    // offset = float2(time, time) * 0.025;
+                    // offset += (float2(i.flow.x , i.flow.y) * 2.0 - 1.0);
+                    // wUV = scale * wUV + offset;
+                    // float4 noise2 = SAMPLE_TEXTURE2D(_Noisemap, sampler_Noisemap, wUV);
+                    // fireTrail = smoothstep(0.0, 0.1, (noise2.y * noise2.y * noise2.y));
+                    // fireTrail *= (1.0 - mask);
+                    // float b = fireTrail;
 
-                    wUV = i.worldUV.xy;
-                    scale = float2(8.0, 8.0);
-                    offset = float2(time, time) * 0.025;
-                    offset += (float2(i.flow.x , i.flow.y) * 2.0 - 1.0);
-                    wUV = scale * wUV + offset;
-                    float4 noise2 = SAMPLE_TEXTURE2D(_Noisemap, sampler_Noisemap, wUV);
-                    fireTrail = smoothstep(0.0, 0.1, (noise2.y * noise2.y * noise2.y));
-                    fireTrail *= (1.0 - i.height);
-                    float b = fireTrail;
+                    // trailDist = ( repulsor.z) * 1.0;
+                    // fireMask = 1.0 - smoothstep(0.0, trailDist, (length(float2(repulsor.x, repulsor.y) - i.worldUV))/  1.);
+                    // fireMask *= (1.0 - mask);
 
-                    trailDist = ( repulsor.z) * 1.0;
-                    fireMask = 1.0 - smoothstep(0.0, trailDist, (length(float2(repulsor.x, repulsor.y) - i.worldUV))/  1.);
-                    fireMask *= (1.0 - i.height);
+                    // float embersTrail =  fireTrail * ( 1.0 - mask) *.25 + fireTrail * fireMask ;
+                    // fireTrail =  fireTrail * ( mask) + fireTrail * fireMask ;
 
-                    float embersTrail =  fireTrail * ( 1.0 - i.height) *.25 + fireTrail * fireMask ;
-                    fireTrail =  fireTrail * ( i.height) + fireTrail * fireMask ;
-                    //fireTrail = lerp(fireTrail * 2.0, fireTrail, repulsor.z );
-
-                    float embers =  embersTrail;
-                    float fire = fireTrail;
-                    color.xyz = lerp(color.xyz, float3(.75  , 0.125, 0.0) , embers);
-                    color.xyz = lerp(color.xyz, float3(1.0 , 0.125, 0.0) , fire);
-                    //color.xyz = lerp(color.xyz, float3(0.0, 0.0, 0.0), b * 5 * (1.0 - repulsor.z));
+                    // float embers =  embersTrail;
+                    // float fire = fireTrail;
+                    // color.xyz = lerp(color.xyz, float3(.75  , 0.125, 0.0) , embers);
+                    // color.xyz = lerp(color.xyz, float3(1.0 , 0.125, 0.0) , fire);
                 }
 
-                float mask = length(float2((i.worldPos.x / ((worldScale * 3.0)/2)), (i.worldPos.z / ((worldScale * 3.0)/2))));
-                mask = 1.0 - smoothstep(0.2, 0.4, mask);
-                //mask = 1.0 - smoothstep(0.3, 1, mask);
-                color.xyz = lerp( float3(0.0, 0.0, 0.0), color.xyz, mask);
+                // float mask = length(float2((i.worldPos.x / ((worldScale * 3.0)/2)), (i.worldPos.z / ((worldScale * 3.0)/2))));
+                // mask = 1.0 - smoothstep(0.2, 0.4, mask);
+                // color.xyz = lerp( float3(0.0, 0.0, 0.0), color.xyz, mask);
 
                 if (a <= 0.2){
                     discard;
@@ -487,6 +489,10 @@ Shader "Unlit/ParticleShader"
                 else{
                     fragout.col = float4(color.x, color.y, color.z, a);
                 }
+                // fragout.col = float4(i.flow.x, i.flow.y, i.flow.z, 1.0);
+                // fragout.col = float4(norm.x, norm.y, norm.z, 1.0);
+                // fragout.col = float4(norm2.x, norm2.y, norm2.z, 1.0);
+                // fragout.col = float4(i.height, i.height, i.height, 1.0);
                 return fragout;
             }
             ENDHLSL
